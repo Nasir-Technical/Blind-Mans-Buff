@@ -137,7 +137,7 @@ Material:
     m_Colors:
     - _BaseColor: {r: 0, g: 1, b: 0.8784314, a: 1}
     - _Color: {r: 0, g: 1, b: 0.8784314, a: 1}
-    - _EmissionColor: {r: 0, g: 21.716658, b: 21.716658, a: 21.716658}
+    - _EmissionColor: {r: 0, g: 11.067877, b: 11.067877, a: 11.067877}
     - _NeonColor: {r: 1, g: 0.15857026, b: 0, a: 1}
     - _SpecColor: {r: 0.19999996, g: 0.19999996, b: 0.19999996, a: 1}
   m_BuildTextureStacks: []

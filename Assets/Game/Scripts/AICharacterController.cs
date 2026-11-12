@@ -404,7 +404,7 @@ public class AICharacterController : MonoBehaviour
     }
 }*/
 
-using UnityEngine;
+/*using UnityEngine;
 using UnityEngine.AI;
 
 [RequireComponent(typeof(NavMeshAgent))]
@@ -516,22 +516,32 @@ public class AICharacterController : MonoBehaviour
         bool isPlayerRunningNoisily = false;
         bool isPlayerHidden = false;
 
-        if (!isPlayerHidden)
+        if (playerTransform != null)
         {
+            // Check karo kya human player locker ke andar hidden hai?
             HiderController hiderCtrl = playerTransform.GetComponent<HiderController>();
             if (hiderCtrl != null)
             {
-                if (hiderCtrl.IsMoving && !hiderCtrl.IsStealthActive)
+                if (hiderCtrl.isHiddenInLocker)
+                {
+                    isPlayerHidden = true;
+                }
+                else if (hiderCtrl.IsMoving && !hiderCtrl.IsStealthActive)
                 {
                     isPlayerRunningNoisily = true;
                 }
             }
             else
             {
+                // Check karo kya AI hider hidden hai?
                 AICharacterController aiHiderCtrl = playerTransform.GetComponent<AICharacterController>();
                 if (aiHiderCtrl != null && aiHiderCtrl.aiRole == Role.Hider)
                 {
-                    if (aiHiderCtrl.agent.velocity.magnitude > 0.1f && !aiHiderCtrl.IsStealthActive)
+                    if (aiHiderCtrl.agent != null && !aiHiderCtrl.agent.enabled)
+                    {
+                        isPlayerHidden = true;
+                    }
+                    else if (aiHiderCtrl.agent.velocity.magnitude > 0.1f && !aiHiderCtrl.IsStealthActive)
                     {
                         isPlayerRunningNoisily = true;
                     }
@@ -543,12 +553,15 @@ public class AICharacterController : MonoBehaviour
         {
             case BlindManState.Patrolling:
                 agent.speed = normalSpeed;
+
+                // Agar player bhaag raha hai ya noise ki hai, toh chase karo
                 if (isPlayerRunningNoisily)
                 {
                     currentBmState = BlindManState.InvestigatingNoise;
                     SetSmartNoiseDestination(playerTransform.position);
                     break;
                 }
+
                 if (!agent.hasPath || agent.remainingDistance < 1f)
                 {
                     Vector3 randomDir = Random.insideUnitSphere * 20f;
@@ -563,21 +576,38 @@ public class AICharacterController : MonoBehaviour
 
             case BlindManState.InvestigatingNoise:
                 agent.speed = normalSpeed;
-                if (isPlayerRunningNoisily) SetSmartNoiseDestination(playerTransform.position);
-                if (isPlayerHidden && agent.remainingDistance < 3f)
+
+                if (isPlayerRunningNoisily)
+                {
+                    SetSmartNoiseDestination(playerTransform.position);
+                }
+
+                // Yahan fix kiya hai: Ab yeh real physical distance check karega ke AI locker ke qareeb pahuncha hai ya nahi
+                if (isPlayerHidden && Vector3.Distance(transform.position, playerTransform.position) < 4f)
                 {
                     currentBmState = BlindManState.WaitingAtLocker;
-                    lockerWaitTimer = 7f;
+                    lockerWaitTimer = 7f; // 7 seconds wait karega
                     agent.ResetPath();
                     break;
                 }
-                if (!agent.hasPath || agent.remainingDistance < 1f) currentBmState = BlindManState.Patrolling;
+
+                if (!agent.hasPath || agent.remainingDistance < 1f)
+                {
+                    currentBmState = BlindManState.Patrolling;
+                }
                 break;
 
             case BlindManState.WaitingAtLocker:
                 lockerWaitTimer -= Time.deltaTime;
                 agent.ResetPath();
-                if (lockerWaitTimer <= 0f) currentBmState = BlindManState.Patrolling;
+
+                // 7 seconds poore hone ke baad wapas Patrolling par chala jayega
+                if (lockerWaitTimer <= 0f)
+                {
+                    currentBmState = BlindManState.Patrolling;
+                }
+
+                // Agar wait karte waqt player ne phir se noise kar di, toh dobara chase shuru kar do
                 if (isPlayerRunningNoisily)
                 {
                     currentBmState = BlindManState.InvestigatingNoise;
@@ -816,6 +846,555 @@ public class AICharacterController : MonoBehaviour
         }
 
         // Sirf tab noise bhejo jab sach mein glow active ho
+        if (showGlow)
+        {
+            BlindManController[] allBlindMen = FindObjectsByType<BlindManController>(FindObjectsSortMode.None);
+            foreach (var bm in allBlindMen)
+            {
+                if (bm != null) bm.OnHearNoise(transform.position);
+            }
+        }
+    }
+}*/
+
+using UnityEngine;
+using UnityEngine.AI;
+using System.Collections.Generic;
+
+[RequireComponent(typeof(NavMeshAgent))]
+public class AICharacterController : MonoBehaviour
+{
+    [Header("AI Glow Materials")]
+    public Material normalMaterial;
+    public Material glowMaterial;
+
+    private NavMeshAgent agent;
+    public enum Role { BlindMan, Hider }
+    public Role aiRole;
+
+    [Header("AI Settings")]
+    public float normalSpeed = 3.5f;
+    public float sprintSpeed = 6.5f;
+    public float stealthSpeed = 2.5f;
+    public float catchDistance = 2.2f;
+    public float chaseStoppingDistance = 0.15f;
+    private Transform playerTransform;
+
+    // --- State Machine Enums & Variables for Blind Man ---
+    public enum BlindManState { Patrolling, InvestigatingNoise, WaitingAtLocker, Chasing }
+    public BlindManState currentBmState = BlindManState.Patrolling;
+
+    private float lockerWaitTimer = 0f;
+    private float lockerDetectionDistance = 6f;
+    private float lockerIgnoreDuration = 12f;
+    private float lockerIgnoreTimer = 0f;
+    private Transform ignoredLockerTarget = null;
+    private Transform currentTarget = null;
+
+    [Header("AI Stealth Limits (5s Active, 10s Cooldown)")]
+    public float maxStealthDuration = 5f;
+    public float stealthCooldownTime = 10f;
+    private float currentStealthTime;
+    private float currentCooldownTime;
+    private bool isStealthCoolingDown = false;
+    public bool IsStealthActive { get; private set; }
+
+    private float startSafetyTimer = 2.0f;
+
+    // --- Dynamic Point Light for Body Glow ---
+    private Light dynamicPointLight;
+    private Renderer[] aiRenderers;
+
+    void Start()
+    {
+        agent = GetComponent<NavMeshAgent>();
+        aiRenderers = GetComponentsInChildren<Renderer>(true);
+
+        currentStealthTime = maxStealthDuration;
+
+        if (aiRole == Role.Hider)
+        {
+            if (GameManager.Instance != null)
+            {
+                GameManager.Instance.RegisterHider();
+            }
+
+            GameObject lightObj = new GameObject("CharacterPointLight");
+            lightObj.transform.SetParent(transform);
+            lightObj.transform.localPosition = new Vector3(0f, 1.2f, 0f);
+
+            dynamicPointLight = lightObj.AddComponent<Light>();
+            dynamicPointLight.type = LightType.Point;
+            dynamicPointLight.range = 10f;
+            dynamicPointLight.intensity = 0f;
+            dynamicPointLight.color = Color.cyan;
+            dynamicPointLight.shadows = LightShadows.Soft;
+        }
+
+        GameObject playerObj = GameObject.FindWithTag("Player");
+        if (playerObj == null)
+        {
+            HiderController hider = FindFirstObjectByType<HiderController>();
+            if (hider != null) playerTransform = hider.transform;
+            else
+            {
+                BlindManController blind = FindFirstObjectByType<BlindManController>();
+                if (blind != null) playerTransform = blind.transform;
+            }
+        }
+        else
+        {
+            playerTransform = playerObj.transform;
+        }
+    }
+
+    void Update()
+    {
+        if (GameManager.Instance != null && GameManager.Instance.isGameOver) return;
+
+        if (startSafetyTimer > 0f)
+        {
+            startSafetyTimer -= Time.deltaTime;
+            return;
+        }
+
+        if (aiRole == Role.BlindMan)
+        {
+            HandleBlindManLogic();
+        }
+        else if (aiRole == Role.Hider)
+        {
+            HandleAIHiderStealthAndMovement();
+            UpdateHiderVisualsAndLight();
+        }
+    }
+
+    void HandleBlindManLogic()
+    {
+        // 1. Basic Safety Checks
+        if (agent == null || !agent.enabled || !agent.isOnNavMesh) return;
+        if (GameManager.Instance != null && GameManager.Instance.isGameOver) return;
+
+        agent.isStopped = false;
+        agent.stoppingDistance = chaseStoppingDistance;
+
+        // 2. Locker Ignore Timer Update
+        if (lockerIgnoreTimer > 0f)
+        {
+            lockerIgnoreTimer -= Time.deltaTime;
+            if (lockerIgnoreTimer <= 0f)
+            {
+                lockerIgnoreTimer = 0f;
+                ignoredLockerTarget = null;
+            }
+        }
+
+        // 3. Scan for Hiders (Player + AI Hiders)
+        Transform bestTarget = null;
+        float minDst = float.MaxValue;
+        bool targetIsRunning = false;
+        bool targetIsHidden = false;
+        bool targetIsStealth = false;
+
+        // Check User Player
+        GameObject playerObj = GameObject.FindWithTag("Player");
+        if (playerObj == null)
+        {
+            HiderController hiderComp = FindFirstObjectByType<HiderController>();
+            if (hiderComp != null) playerObj = hiderComp.gameObject;
+        }
+
+        if (playerObj != null)
+        {
+            float dist = Vector3.Distance(transform.position, playerObj.transform.position);
+            if (dist < minDst)
+            {
+                minDst = dist;
+                bestTarget = playerObj.transform;
+
+                HiderController hiderCtrl = playerObj.GetComponent<HiderController>();
+                if (hiderCtrl != null)
+                {
+                    targetIsHidden = hiderCtrl.isHiddenInLocker;
+                    targetIsStealth = hiderCtrl.IsStealthActive;
+                    targetIsRunning = hiderCtrl.IsMoving && !targetIsStealth && !targetIsHidden;
+                }
+            }
+        }
+
+        // Check AI Hiders
+        AICharacterController[] allAI = FindObjectsByType<AICharacterController>(FindObjectsSortMode.None);
+        foreach (var ai in allAI)
+        {
+            if (ai != null && ai.aiRole == Role.Hider && ai.gameObject.activeSelf)
+            {
+                float dist = Vector3.Distance(transform.position, ai.transform.position);
+                if (dist < minDst)
+                {
+                    minDst = dist;
+                    bestTarget = ai.transform;
+                    targetIsHidden = (ai.agent != null && !ai.agent.enabled);
+                    targetIsStealth = ai.IsStealthActive;
+                    targetIsRunning = (ai.agent != null && ai.agent.velocity.magnitude > 0.25f && !targetIsStealth && !targetIsHidden);
+                }
+            }
+        }
+
+        // Handle Locker Waiting State Separately if active
+        if (currentBmState == BlindManState.WaitingAtLocker)
+        {
+            HandleLockerWaitingLogic();
+            return;
+        }
+
+        // Check if target is hidden in locker and we are close enough
+        if (targetIsHidden && minDst <= lockerDetectionDistance && bestTarget != ignoredLockerTarget)
+        {
+            EnterLockerWaitingState(bestTarget);
+            return;
+        }
+
+        // 4. State Machine Execution
+        switch (currentBmState)
+        {
+            case BlindManState.Patrolling:
+                agent.speed = normalSpeed;
+
+                if (bestTarget != null && !targetIsHidden)
+                {
+                    if (targetIsRunning || minDst < 8f)
+                    {
+                        currentBmState = BlindManState.InvestigatingNoise;
+                        SetSafeDestination(bestTarget.position);
+                    }
+                    else if (!targetIsStealth && minDst < 4f)
+                    {
+                        currentBmState = BlindManState.Chasing;
+                        SetSafeDestination(bestTarget.position);
+                    }
+                }
+                else
+                {
+                    PatrolRandomly();
+                }
+                break;
+
+            case BlindManState.InvestigatingNoise:
+                agent.speed = sprintSpeed;
+                agent.stoppingDistance = 0.3f;
+
+                if (bestTarget != null && !targetIsHidden)
+                {
+                    if (minDst <= 10f)
+                    {
+                        currentBmState = BlindManState.Chasing;
+                    }
+                    else
+                    {
+                        SetSafeDestination(bestTarget.position);
+                    }
+                }
+                else
+                {
+                    if (!agent.hasPath || agent.remainingDistance < 1f)
+                    {
+                        currentBmState = BlindManState.Patrolling;
+                        PatrolRandomly();
+                    }
+                }
+                break;
+
+            case BlindManState.Chasing:
+                agent.speed = sprintSpeed;
+                agent.stoppingDistance = chaseStoppingDistance;
+
+                if (bestTarget != null && !targetIsHidden)
+                {
+                    SetSafeDestination(bestTarget.position);
+
+                    // CATCH CHECK
+                    if (minDst <= catchDistance)
+                    {
+                        ExecuteCatch(bestTarget, playerObj);
+                    }
+                }
+                else
+                {
+                    currentBmState = BlindManState.Patrolling;
+                    PatrolRandomly();
+                }
+                break;
+        }
+    }
+
+    void EnterLockerWaitingState(Transform lockerTarget)
+    {
+        currentBmState = BlindManState.WaitingAtLocker;
+        lockerWaitTimer = 7f;
+        currentTarget = lockerTarget;
+        agent.isStopped = true;
+        agent.ResetPath();
+        Debug.Log("Blind Man: Investigating locker, waiting 7 seconds.");
+    }
+
+    void HandleLockerWaitingLogic()
+    {
+        agent.isStopped = true;
+        agent.velocity = Vector3.zero;
+        lockerWaitTimer -= Time.deltaTime;
+
+        if (lockerWaitTimer <= 0f)
+        {
+            lockerWaitTimer = 0f;
+            ignoredLockerTarget = currentTarget;
+            lockerIgnoreTimer = lockerIgnoreDuration;
+
+            currentTarget = null;
+            agent.isStopped = false;
+            agent.ResetPath();
+            currentBmState = BlindManState.Patrolling;
+
+            Vector3 escapePos = transform.position + (Random.insideUnitSphere * 25f);
+            escapePos.y = transform.position.y;
+            SetSafeDestination(escapePos);
+            Debug.Log("Blind Man: 7 seconds over, leaving locker area!");
+        }
+    }
+
+    void SetSafeDestination(Vector3 targetPos)
+    {
+        if (agent == null || !agent.enabled || !agent.isOnNavMesh) return;
+        NavMeshHit hit;
+        if (NavMesh.SamplePosition(targetPos, out hit, 5f, NavMesh.AllAreas))
+        {
+            agent.isStopped = false;
+            agent.SetDestination(hit.position);
+        }
+    }
+
+    void PatrolRandomly()
+    {
+        if (!agent.hasPath || agent.remainingDistance < 1.5f)
+        {
+            Vector3 randomDir = Random.insideUnitSphere * 25f + transform.position;
+            NavMeshHit hit;
+            if (NavMesh.SamplePosition(randomDir, out hit, 20f, NavMesh.AllAreas))
+            {
+                agent.isStopped = false;
+                agent.SetDestination(hit.position);
+            }
+        }
+    }
+
+    void ExecuteCatch(Transform target, GameObject playerObj)
+    {
+        if (playerObj != null && target == playerObj.transform)
+        {
+            Debug.Log(">>> GAME OVER: User Player Caught by Blind Man!");
+            if (GameManager.Instance != null)
+            {
+                GameManager.Instance.TriggerGameOver(1);
+            }
+        }
+        else
+        {
+            AICharacterController caughtAiHider = target.GetComponent<AICharacterController>();
+            if (caughtAiHider != null)
+            {
+                Debug.Log("AI HIDER CAUGHT!");
+                if (GameManager.Instance != null)
+                {
+                    GameManager.Instance.OnHiderCaught();
+                }
+                caughtAiHider.gameObject.SetActive(false);
+                currentBmState = BlindManState.Patrolling;
+            }
+        }
+    }
+
+    public void OnHearNoise(Vector3 noisePosition)
+    {
+        if (currentBmState == BlindManState.WaitingAtLocker) return;
+        if (currentBmState == BlindManState.Chasing) return;
+
+        currentBmState = BlindManState.InvestigatingNoise;
+        SetSafeDestination(noisePosition);
+    }
+
+    void HandleAIHiderStealthAndMovement()
+    {
+        Transform closestBlindMan = null;
+        float minDst = float.MaxValue;
+
+        BlindManController[] allBlindMen = FindObjectsByType<BlindManController>(FindObjectsSortMode.None);
+        foreach (var bm in allBlindMen)
+        {
+            if (bm != null)
+            {
+                float dist = Vector3.Distance(transform.position, bm.transform.position);
+                if (dist < minDst) { minDst = dist; closestBlindMan = bm.transform; }
+            }
+        }
+
+        AICharacterController[] allAI = FindObjectsByType<AICharacterController>(FindObjectsSortMode.None);
+        foreach (var ai in allAI)
+        {
+            if (ai != null && ai.aiRole == Role.BlindMan)
+            {
+                float dist = Vector3.Distance(transform.position, ai.transform.position);
+                if (dist < minDst) { minDst = dist; closestBlindMan = ai.transform; }
+            }
+        }
+
+        if (minDst < 6f)
+        {
+            GameObject nearestLocker = FindNearestLocker();
+            if (nearestLocker != null)
+            {
+                float distToLocker = Vector3.Distance(transform.position, nearestLocker.transform.position);
+
+                agent.speed = sprintSpeed;
+                agent.SetDestination(nearestLocker.transform.position);
+
+                if (distToLocker < 2.5f)
+                {
+                    HideInLocker(true);
+                    return;
+                }
+            }
+        }
+
+        HideInLocker(false);
+
+        bool shouldBeStealth = minDst < 8f && currentStealthTime > 0f && !isStealthCoolingDown;
+
+        if (isStealthCoolingDown)
+        {
+            currentCooldownTime -= Time.deltaTime;
+            if (currentCooldownTime <= 0f) { isStealthCoolingDown = false; currentStealthTime = maxStealthDuration; }
+        }
+        else
+        {
+            if (shouldBeStealth)
+            {
+                IsStealthActive = true;
+                currentStealthTime -= Time.deltaTime;
+                if (currentStealthTime <= 0f) { currentStealthTime = 0f; isStealthCoolingDown = true; currentCooldownTime = stealthCooldownTime; }
+            }
+            else
+            {
+                IsStealthActive = false;
+                if (!shouldBeStealth && currentStealthTime < maxStealthDuration && !isStealthCoolingDown)
+                {
+                    currentStealthTime += Time.deltaTime * 0.5f;
+                    currentStealthTime = Mathf.Clamp(currentStealthTime, 0f, maxStealthDuration);
+                }
+            }
+        }
+
+        if (closestBlindMan != null && minDst < 10f)
+        {
+            agent.speed = IsStealthActive ? stealthSpeed : sprintSpeed;
+
+            Vector3 fleeDir = transform.position - closestBlindMan.position;
+            Vector3 targetEscapePos = transform.position + fleeDir.normalized * 10f;
+            NavMeshHit hit;
+            if (NavMesh.SamplePosition(targetEscapePos, out hit, 10f, NavMesh.AllAreas))
+            {
+                agent.SetDestination(hit.position);
+            }
+        }
+        else
+        {
+            agent.speed = IsStealthActive ? stealthSpeed : normalSpeed;
+
+            if (!agent.hasPath || agent.remainingDistance < 1.5f)
+            {
+                Vector3 randomDir = Random.insideUnitSphere * 20f + transform.position;
+                NavMeshHit hit;
+                if (NavMesh.SamplePosition(randomDir, out hit, 20f, NavMesh.AllAreas))
+                {
+                    agent.SetDestination(hit.position);
+                }
+            }
+        }
+    }
+
+    GameObject FindNearestLocker()
+    {
+        Transform[] allTrans = FindObjectsByType<Transform>(FindObjectsSortMode.None);
+        GameObject closest = null;
+        float minDist = Mathf.Infinity;
+        Vector3 currentPos = transform.position;
+
+        foreach (var t in allTrans)
+        {
+            if (t != null && (t.name.Contains("Locker") || t.name.Contains("locker")))
+            {
+                float dist = Vector3.Distance(t.position, currentPos);
+                if (dist < minDist)
+                {
+                    minDist = dist;
+                    closest = t.gameObject;
+                }
+            }
+        }
+        return closest;
+    }
+
+    void HideInLocker(bool hide)
+    {
+        foreach (var rend in aiRenderers)
+        {
+            if (rend != null) rend.enabled = !hide;
+        }
+        if (agent != null) agent.enabled = !hide;
+    }
+
+    void UpdateHiderVisualsAndLight()
+    {
+        bool isMoving = agent != null && agent.velocity.magnitude > 0.1f;
+        bool showGlow = isMoving && !IsStealthActive;
+
+        if (dynamicPointLight != null)
+        {
+            float targetLightIntensity = showGlow ? 25f : 0f;
+            dynamicPointLight.intensity = Mathf.Lerp(dynamicPointLight.intensity, targetLightIntensity, Time.deltaTime * 10f);
+        }
+
+        Material targetMat = showGlow ? glowMaterial : normalMaterial;
+        if (targetMat == null) return;
+
+        foreach (Renderer rend in aiRenderers)
+        {
+            if (rend != null)
+            {
+                rend.material = targetMat;
+                Material mat = rend.material;
+
+                if (mat != null)
+                {
+                    if (showGlow)
+                    {
+                        mat.EnableKeyword("_EMISSION");
+                        if (mat.HasProperty("_EmissionColor"))
+                        {
+                            float pulseStrength = 15f + Mathf.Sin(Time.time * 8f) * 5f;
+                            mat.SetColor("_EmissionColor", Color.cyan * pulseStrength);
+                        }
+                    }
+                    else
+                    {
+                        mat.DisableKeyword("_EMISSION");
+                        if (mat.HasProperty("_EmissionColor"))
+                        {
+                            mat.SetColor("_EmissionColor", Color.black);
+                        }
+                    }
+                }
+            }
+        }
+
         if (showGlow)
         {
             BlindManController[] allBlindMen = FindObjectsByType<BlindManController>(FindObjectsSortMode.None);
