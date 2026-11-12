@@ -347,10 +347,10 @@ public class HiderController : MonoBehaviour
 
         IsMoving = (moveX != 0 || moveZ != 0);
 
-        // --- STEALTH LOGIC (Left Shift) ---
-        bool isShiftPressed = Keyboard.current != null && (Keyboard.current.leftShiftKey.isPressed || Keyboard.current.rightShiftKey.isPressed);
+        // --- STEALTH LOGIC (Shift C) ---
+        bool isCPressed = Keyboard.current != null && (Keyboard.current.cKey.isPressed);
 
-        if (!isShiftPressed)
+        if (!isCPressed)
         {
             canUseStealth = true;
         }
@@ -368,7 +368,7 @@ public class HiderController : MonoBehaviour
         }
         else
         {
-            if (isShiftPressed && IsMoving && currentStealthTime > 0f && canUseStealth)
+            if (isCPressed && IsMoving && currentStealthTime > 0f && canUseStealth)
             {
                 isStealth = true;
                 currentStealthTime -= Time.deltaTime;
@@ -383,7 +383,7 @@ public class HiderController : MonoBehaviour
             }
             else
             {
-                if (!isShiftPressed && currentStealthTime < maxStealthDuration && !isStealthCoolingDown)
+                if (!isCPressed && currentStealthTime < maxStealthDuration && !isStealthCoolingDown)
                 {
                     currentStealthTime += Time.deltaTime * 0.5f;
                     currentStealthTime = Mathf.Clamp(currentStealthTime, 0f, maxStealthDuration);
@@ -393,8 +393,8 @@ public class HiderController : MonoBehaviour
 
         IsStealthActive = isStealth;
 
-        // --- SPRINT LOGIC (C Key) ---
-        bool isSprintPressed = Keyboard.current != null && Keyboard.current.cKey.isPressed;
+        // --- SPRINT LOGIC (Shift Key) ---
+        bool isSprintPressed = Keyboard.current != null && (Keyboard.current.leftShiftKey.isPressed || Keyboard.current.rightShiftKey.isPressed);
         bool isSprint = isSprintPressed && IsMoving && !IsStealthActive;
 
         // Speed selection
