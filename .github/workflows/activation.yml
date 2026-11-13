@@ -5,21 +5,15 @@ on:
 
 jobs:
   activation:
-    name: Request manual activation file
+    name: Request activation file via credentials
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Request manual activation file
-        id: getManualLicenseFile
-        uses: game-ci/unity-builder@v4
+      - name: Request Activation File
+        uses: game-ci/unity-request-activation-file@v3
         with:
           unityVersion: 6000.0.23f1
-          manualActivation: true
-
-      - name: Expose as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ManualActivationFile
-          path: ${{ steps.getManualLicenseFile.outputs.filePath }}
+          email: ${{ secrets.UNITY_EMAIL }}
+          password: ${{ secrets.UNITY_PASSWORD }}
